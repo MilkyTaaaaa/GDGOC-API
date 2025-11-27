@@ -20,6 +20,7 @@ func SetupRoutes(app *fiber.App, menuHandler *handlers.MenuHandler){
 
 func setupMenuRoutes(router fiber.Router, handler *handlers.MenuHandler){
 	// menu route
+	router.Post("/menu/recommendations", handler.GetRecommendations)
 	router.Get("/menu/group-by-category", handler.GroupByCategory)
 	router.Get("/menu/search", handler.SearchMenus)
 	router.Post("/menu", handler.CreateMenu)

@@ -11,6 +11,7 @@ type Config struct {
 	Port        string
 	AppEnv      string
 	DatabaseURL string
+	GeminiAPIKey	string
 }
 
 var AppConfig *Config
@@ -25,9 +26,16 @@ func LoadConfig() {
 		Port:        getEnv("PORT", "3000"),
 		AppEnv:      getEnv("APP_ENV", "development"),
 		DatabaseURL: getEnv("DATABASE_URL", ""),
+		GeminiAPIKey: getEnv("GEMINI_API_KEY", ""),
 	}
 
 	// validasi konfig
+	if AppConfig.GeminiAPIKey == ""{
+		log.Println(" GEMINI_API_KEY belum di set.")
+	} else{
+		log.Println("Gemini API berhasil di load!")
+	}
+	
 	if AppConfig.DatabaseURL == "" {
 		log.Fatal("DATABASE_URL environment variable is required")
 	}

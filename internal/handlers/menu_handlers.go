@@ -1,23 +1,200 @@
 package handlers
 
 import(
+	"GDGOC-API/internal/gemini"
 	"GDGOC-API/internal/models"
 	"GDGOC-API/internal/services"
 	"strconv"
 	"strings"
+	"fmt"
+	"log"
 	"github.com/gofiber/fiber/v2"
 )
 
 type MenuHandler struct{
 	service *services.MenuService
+	geminiService	*gemini.Service
 }
 
 // create instance baru MenuHandler
-func NewMenuHandler(service *services.MenuService) *MenuHandler{
+func NewMenuHandler(service *services.MenuService, geminiService *gemini.Service) *MenuHandler{
 	return &MenuHandler{
 		service: service,
+		geminiService: geminiService,
 	}
 }
+
+// mendapatkan rekomendasi menu
+func (h *MenuHandler) GetRecommendations(c *fiber.Ctx) error {
+    var req gemini.RecommendationReq
+    
+    // Parse request body
+    if err := c.BodyParser(&req); err != nil {
+        return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+            Message: "Invalid request body",
+            Errors:  err.Error(),
+        })
+    }
+
+    // query tidak boleh kosong
+    if strings.TrimSpace(req.Query) == "" {
+        return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
+            Message: "Query is required",
+        })
+    }
+
+    // Dapatkan semua menu yang tersedia (dengan filter basic)
+    filters := models.MenuFilters{
+        MaxPrice: req.MaxPrice,
+    }
+    
+    allMenus, _, err := h.service.GetAllMenus(filters)
+    if err != nil {
+        return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
+            Message: "Failed to get menus",
+            Errors:  err.Error(),
+        })
+    }
+
+    // Filter manual untuk diet
+    filteredMenus := h.applyDietaryFilters(allMenus, req.Diet, req.Exclude)
+
+    // Dapatkan rekomendasi dari Gemini AI
+    var result *gemini.RecommendationResult
+    
+    if h.geminiService != nil {
+        result, err = h.geminiService.GetRecommendations(req, filteredMenus)
+        if err != nil {
+            log.Printf("Gemini recommendation failed: %v", err)
+            // Fallback ke basic recommendations
+            result = h.getBasicRecommendations(req, filteredMenus)
+        }
+    } else {
+        // menggunakan basic recommendations (jika Gemini tidak available)
+        result = h.getBasicRecommendations(req, filteredMenus)
+    }
+
+    return c.Status(fiber.StatusOK).JSON(result)
+}
+
+// Filter menu berdasarkan dietary restrictions
+func (h *MenuHandler) applyDietaryFilters(menus []models.Menu, diet string, exclude []string) []models.Menu {
+    if diet == "" && len(exclude) == 0 {
+        return menus 
+    }
+
+    var filtered []models.Menu
+    
+    for _, menu := range menus {
+        // Filter berdasarkan diet
+        if diet != "" && !h.matchesDiet(menu, diet) {
+            continue
+        }
+        
+        // Filter berdasarkan excluded ingredients
+        if len(exclude) > 0 && h.containsExcluded(menu, exclude) {
+            continue
+        }
+        
+        filtered = append(filtered, menu)
+    }
+    
+    return filtered
+}
+
+// mengecek apakah menu match dengan dietary requirement
+func (h *MenuHandler) matchesDiet(menu models.Menu, diet string) bool {
+    switch strings.ToLower(diet) {
+    case "vegetarian":
+        return !h.containsMeat(menu.Ingredients)
+    case "vegan":
+        return !h.containsAnimalProducts(menu.Ingredients)
+    case "low-carb":
+        return menu.Calories != nil && *menu.Calories < 400
+    default:
+        return true
+    }
+}
+
+// mengecek apakah menu mengandung excluded ingredients
+func (h *MenuHandler) containsExcluded(menu models.Menu, exclude []string) bool {
+    for _, excluded := range exclude {
+        for _, ingredient := range menu.Ingredients {
+            if strings.Contains(strings.ToLower(ingredient), strings.ToLower(excluded)) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+// Mengecek apakah mengandung daging (untuk vegetarian)
+func (h *MenuHandler) containsMeat(ingredients []string) bool {
+    meatKeywords := []string{"ayam", "daging", "sapi", "babi", "ikan", "udang", "cumi"}
+    for _, ingredient := range ingredients {
+        for _, meat := range meatKeywords {
+            if strings.Contains(strings.ToLower(ingredient), meat) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+// Mengecek apakah mengandung produk hewani (untuk vegan)
+func (h *MenuHandler) containsAnimalProducts(ingredients []string) bool {
+    animalProducts := []string{"susu", "keju", "telur", "madu", "mentega"}
+    return h.containsMeat(ingredients) || h.containsAny(ingredients, animalProducts)
+}
+
+func (h *MenuHandler) containsAny(ingredients []string, keywords []string) bool {
+    for _, ingredient := range ingredients {
+        for _, keyword := range keywords {
+            if strings.Contains(strings.ToLower(ingredient), keyword) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+// Fallback recommendations tanpa AI
+func (h *MenuHandler) getBasicRecommendations(req gemini.RecommendationReq, menus []models.Menu) *gemini.RecommendationResult {
+    var recommendations []gemini.MenuRecommendation
+    
+    // Simple keyword matching
+    queryLower := strings.ToLower(req.Query)
+    
+    for i, menu := range menus {
+        if i >= 5 { // Maksimal 5 rekomendasi
+            break
+        }
+        
+        reason := " Rekomendasi berdasarkan preferensi Anda"
+        menuText := strings.ToLower(menu.Name + " " + menu.Description)
+        
+        // Simple keyword matching untuk reason yang lebih spesifik
+        if strings.Contains(queryLower, "pedas") && strings.Contains(menuText, "pedas") {
+            reason = " Pedas sesuai permintaan Anda"
+        } else if strings.Contains(queryLower, "sehat") && (menu.Calories != nil && *menu.Calories < 400) {
+            reason = " Sehat dengan kalori terkontrol"
+        } else if strings.Contains(queryLower, "murah") && menu.Price < 30000 {
+            reason = " Harga terjangkau"
+        }
+        
+        recommendations = append(recommendations, gemini.MenuRecommendation{
+            Menu:       menu,
+            MatchReason: reason,
+        })
+    }
+    
+    return &gemini.RecommendationResult{
+        Query:          req.Query,
+        Recommendations: recommendations,
+        SearchSummary:  fmt.Sprintf("Ditemukan %d rekomendasi untuk '%s'", len(recommendations), req.Query),
+    }
+}
+
 
 // POST /menu
 func (h *MenuHandler) CreateMenu(c *fiber.Ctx) error{

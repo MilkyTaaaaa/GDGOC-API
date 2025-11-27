@@ -3,6 +3,7 @@ package main
 import(
 	"GDGOC-API/internal/config"
 	"GDGOC-API/internal/database"
+	"GDGOC-API/internal/gemini"
 	"GDGOC-API/internal/handlers"
 	"GDGOC-API/internal/repositories"
 	"GDGOC-API/internal/routes"
@@ -28,12 +29,34 @@ func main(){
 	database.ConnectDatabase()
 	defer database.CloseDatabase()
 
+	// ✅ DEKLARASI VARIABLE DI SCOPE YANG SAMA
+	var geminiService *gemini.Service
+
+    if config.GetConfig().GeminiAPIKey != "" {
+        log.Println("Inisialisasi Gemini AI...")
+        
+        // ✅ GUNAKAN = BUKAN := (karena sudah dideklarasikan)
+        var err error
+        geminiService, err = gemini.NewService(config.GetConfig().GeminiAPIKey)
+        if err != nil {
+            log.Printf("Gagal inisialisasi Gemini: %v", err)
+            geminiService = nil
+        } else {
+            log.Println("Gemini AI berhasil diinisialisasi")
+        }
+    } else {
+        log.Println("Gemini API key belum di set - berjalan tanpa fitur AI")
+        geminiService = nil
+    }
+
 	// layer app
 	log.Println("Inisialisasi layer...")
 
 	menuRepo := repositories.NewMenuRepository(database.GetDB())
 	menuService := services.NewMenuService(menuRepo)
-	menuHandler := handlers.NewMenuHandler(menuService)
+	
+	// ✅ SEKARANG geminiService SUDAH TERDEFINISI DI SCOPE INI
+	menuHandler := handlers.NewMenuHandler(menuService, geminiService) 
 
 	log.Println("Creating Fiber app...")
 	app := fiber.New(fiber.Config{
@@ -53,9 +76,10 @@ func main(){
 	// start
 	port := config.GetConfig().Port
 	log.Println("Server siap digunakan")
-	log.Println("Server dijalankan di http://localhost:%s", port)
-	log.Println("API Base : http://localhost:%s", port)
-	log.Println("Health check: http://localhost:%s/health", port)
+	log.Printf("Server dijalankan di http://localhost:%s\n", port)
+	log.Printf("API Base : http://localhost:%s\n", port)
+	log.Printf("Health check: http://localhost:%s/health\n", port)
+	log.Printf("AI Recommendations: POST http://localhost:%s/menu/recommendations\n", port)
 
 	// shutdown
 	go func() {
